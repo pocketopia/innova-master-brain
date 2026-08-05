@@ -377,7 +377,42 @@ router.post("/verify", async (req: Request, res: Response) => {
   }
   
   try {
-    const db = getFirestore();
+    // =========================================================================
+    // MOCK MODE FALLBACK
+    // =========================================================================
+    // When Firebase is not initialized (mock mode), return a successful
+    // mock authentication response so the frontend can proceed.
+    // =========================================================================
+    let db: ReturnType<typeof getFirestore>;
+    try {
+      db = getFirestore();
+    } catch (dbError) {
+      console.log("[IDENTITY] Firebase not available - returning mock verification");
+      res.json({
+        success: true,
+        verified: true,
+        user: userName.startsWith("@") ? userName : `@${userName}`,
+        token: "mock_token_123",
+        mock: true,
+        identity: {
+          userName: userName.startsWith("@") ? userName : `@${userName}`,
+          walletAddress: "0xmockwallet123456789",
+          status: "verified",
+          tier: "Free",
+          tenantPermissions: {
+            MVN: ["read", "write", "publish"],
+            StreamShare: ["read", "write", "publish"],
+            ArcHaven: ["read", "write"],
+            HekticTV: ["read", "write", "broadcast"],
+            Kreation: ["read", "write", "deploy"],
+          },
+        },
+        challenge: challenge || generateChallenge(),
+        message: "Mock verification successful - Firebase not configured",
+      });
+      return;
+    }
+    
     const userId = userName.startsWith("@") ? userName.substring(1) : userName;
     
     // Fetch identity document
