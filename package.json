@@ -6,7 +6,7 @@
   "description": "Innova Ecosystem - Multi-tenant Web3 Media Platform",
   "scripts": {
     "dev": "tsx server.ts",
-    "start": "node server.js",
+    "start": "tsx server.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
