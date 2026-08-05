@@ -1,0 +1,378 @@
+/**
+ * =============================================================================
+ * INNOVA MASTER BRAIN ENGINE - Tailwind v4 Dynamic Theming
+ * =============================================================================
+ * 
+ * This stylesheet implements Tailwind v4's CSS variable system (@theme) for
+ * dynamic multi-tenant theming. When users switch between tenants (MVN,
+ * StreamShare, ArcHaven, HekticTV, Kreation), the CSS variables are updated
+ * by the TenantProvider, and all components automatically adopt the new branding.
+ * 
+ * CSS Variables (set by TenantProvider):
+ * - --tenant-primary: Primary brand color
+ * - --tenant-secondary: Secondary brand color
+ * - --tenant-accent: Accent/highlight color
+ * - --tenant-font-family: Brand-specific typography
+ * - --tenant-border-radius: Component border radius
+ * 
+ * Base Colors (constant across all tenants):
+ * - --innova-bg: Background color (#050505)
+ * - --innova-text: Text color (#E4E3E0)
+ * - --innova-surface: Surface/card color (#111111)
+ * =============================================================================
+ */
+
+/* =============================================================================
+   FONT IMPORTS
+   ============================================================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&family=JetBrains+Mono:wght@400;700&display=swap');
+
+/* =============================================================================
+   TAILWIND IMPORT
+   ============================================================================= */
+
+@import "tailwindcss";
+
+/* =============================================================================
+   TAILWIND V4 @THEME DIRECTIVE
+   =============================================================================
+   * 
+   * Define custom CSS variables that can be used throughout the application.
+   * These variables are dynamically updated by the TenantProvider based on
+   * the current tenant's branding configuration.
+   * 
+   * Usage in components:
+   * - bg-[var(--tenant-primary)] or bg-primary (if mapped below)
+   * - text-[var(--tenant-accent)] or text-accent
+   * - font-[var(--tenant-font-family)]
+   * - rounded-[var(--tenant-border-radius)]
+   * =============================================================================
+ */
+
+@theme {
+  /* Base Innova colors (constant) */
+  --color-innova-bg: #050505;
+  --color-innova-text: #E4E3E0;
+  --color-innova-surface: #111111;
+  --color-innova-border: rgba(255, 255, 255, 0.1);
+  
+  /* Dynamic tenant colors (updated by TenantProvider) */
+  --color-tenant-primary: #F43F5E;    /* Default: MVN Rose */
+  --color-tenant-secondary: #E11D48;
+  --color-tenant-accent: #FB7185;
+  
+  /* Tenant typography */
+  --font-tenant: "Inter", sans-serif;
+  
+  /* Tenant component styling */
+  --radius-tenant: 0.5rem;
+  
+  /* Standard fonts */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* =============================================================================
+   BASE STYLES
+   ============================================================================= */
+
+@layer base {
+  /* Apply base colors to body */
+  body {
+    background-color: var(--color-innova-bg);
+    color: var(--color-innova-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  
+  /* Smooth transitions for theme switching */
+  * {
+    transition-property: background-color, border-color, color;
+    transition-duration: 300ms;
+    transition-timing-function: ease-in-out;
+  }
+  
+  /* Selection color uses tenant primary */
+  ::selection {
+    background-color: var(--color-tenant-primary);
+    color: white;
+  }
+  
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: var(--color-innova-bg);
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-tenant-primary);
+    border-radius: 4px;
+    opacity: 0.5;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-tenant-secondary);
+  }
+}
+
+/* =============================================================================
+   COMPONENT STYLES
+   ============================================================================= */
+
+@layer components {
+  /* Display text - bold, tight tracking */
+  .bold-display {
+    font-weight: 900;
+    letter-spacing: -0.05em;
+    line-height: 0.85;
+  }
+  
+  /* Monospace text */
+  .mono {
+    font-family: var(--font-mono);
+  }
+  
+  /* Brand label - small uppercase text */
+  .brand-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: #888;
+    font-weight: 700;
+  }
+  
+  /* Platform card base styles */
+  .platform-card {
+    border-left: 4px solid transparent;
+    transition: all 0.2s ease;
+  }
+  
+  .platform-card:hover {
+    background: var(--color-innova-surface);
+    border-left-color: var(--color-tenant-primary);
+  }
+  
+  /* Tenant-branded button */
+  .btn-tenant {
+    background-color: var(--color-tenant-primary);
+    color: white;
+    border-radius: var(--radius-tenant);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 0.75rem 1.5rem;
+    transition: all 0.2s ease;
+  }
+  
+  .btn-tenant:hover {
+    background-color: var(--color-tenant-secondary);
+    transform: translateY(-1px);
+  }
+  
+  .btn-tenant:active {
+    transform: translateY(0);
+  }
+  
+  /* Tenant-branded card */
+  .card-tenant {
+    background: var(--color-innova-surface);
+    border: 1px solid var(--color-innova-border);
+    border-radius: var(--radius-tenant);
+    border-left: 4px solid var(--color-tenant-primary);
+  }
+  
+  /* Tenant accent text */
+  .text-tenant-primary {
+    color: var(--color-tenant-primary);
+  }
+  
+  .text-tenant-secondary {
+    color: var(--color-tenant-secondary);
+  }
+  
+  .text-tenant-accent {
+    color: var(--color-tenant-accent);
+  }
+  
+  /* Tenant accent background */
+  .bg-tenant-primary {
+    background-color: var(--color-tenant-primary);
+  }
+  
+  .bg-tenant-secondary {
+    background-color: var(--color-tenant-secondary);
+  }
+  
+  /* Tenant border */
+  .border-tenant-primary {
+    border-color: var(--color-tenant-primary);
+  }
+  
+  /* Tenant glow effect */
+  .glow-tenant {
+    box-shadow: 0 0 20px var(--color-tenant-primary),
+                0 0 40px var(--color-tenant-primary),
+                0 0 60px var(--color-tenant-primary);
+  }
+  
+  .glow-tenant-sm {
+    box-shadow: 0 0 10px var(--color-tenant-primary);
+  }
+}
+
+/* =============================================================================
+   UTILITY STYLES
+   ============================================================================= */
+
+@layer utilities {
+  /* Pulse animation for status indicators */
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  
+  /* Gradient text using tenant colors */
+  .text-gradient-tenant {
+    background: linear-gradient(
+      135deg,
+      var(--color-tenant-primary) 0%,
+      var(--color-tenant-accent) 100%
+    );
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  /* Content height for full viewport */
+  .h-content {
+    height: calc(100vh - 80px - 100px); /* viewport - nav - footer */
+  }
+}
+
+/* =============================================================================
+   KEYFRAME ANIMATIONS
+   ============================================================================= */
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* =============================================================================
+   TENANT-SPECIFIC OVERRIDES
+   =============================================================================
+   * 
+   * These styles apply when specific tenants are active.
+   * The data-tenant attribute is set by TenantProvider.
+   * =============================================================================
+ */
+
+/* MVN - Music Video Network (Rose theme) */
+[data-tenant="MVN"] {
+  --color-tenant-primary: #F43F5E;
+  --color-tenant-secondary: #E11D48;
+  --color-tenant-accent: #FB7185;
+  --font-tenant: "Inter", sans-serif;
+  --radius-tenant: 0.5rem;
+}
+
+/* StreamShare - Social Content (Amber theme) */
+[data-tenant="StreamShare"] {
+  --color-tenant-primary: #F59E0B;
+  --color-tenant-secondary: #D97706;
+  --color-tenant-accent: #FBBF24;
+  --font-tenant: "Inter", sans-serif;
+  --radius-tenant: 0.75rem;
+}
+
+/* ArcHaven - Creator Sanctuary (Indigo theme) */
+[data-tenant="ArcHaven"] {
+  --color-tenant-primary: #6366F1;
+  --color-tenant-secondary: #4F46E5;
+  --color-tenant-accent: #818CF8;
+  --font-tenant: "Inter", sans-serif;
+  --radius-tenant: 1rem;
+}
+
+/* HekticTV - Live Broadcasting (Lime theme) */
+[data-tenant="HekticTV"] {
+  --color-tenant-primary: #84CC16;
+  --color-tenant-secondary: #65A30D;
+  --color-tenant-accent: #A3E635;
+  --font-tenant: "JetBrains Mono", monospace;
+  --radius-tenant: 0.25rem;
+}
+
+/* Kreation - Gaming Platform (Cyan theme) */
+[data-tenant="Kreation"] {
+  --color-tenant-primary: #06B6D4;
+  --color-tenant-secondary: #0891B2;
+  --color-tenant-accent: #22D3EE;
+  --font-tenant: "JetBrains Mono", monospace;
+  --radius-tenant: 0.375rem;
+}
+
+/* =============================================================================
+   GRID PATTERN BACKGROUND
+   ============================================================================= */
+
+.bg-grid-pattern {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* =============================================================================
+   GLASSMORPHISM UTILITIES
+   ============================================================================= */
+
+.glass {
+  background: rgba(17, 17, 17, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.glass-heavy {
+  background: rgba(17, 17, 17, 0.8);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+/* =============================================================================
+   RESPONSIVE UTILITIES
+   ============================================================================= */
+
+@layer utilities {
+  /* Full viewport height minus nav */
+  .min-h-screen-nav {
+    min-height: calc(100vh - 80px);
+  }
+}

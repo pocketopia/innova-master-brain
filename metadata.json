@@ -1,0 +1,6 @@
+{
+  "name": "Master Brain Engine",
+  "description": "Unified backend engine managing five distinct streaming platforms: MVN, StreamShare, ArcHaven, HekticTV, and VaultStream.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

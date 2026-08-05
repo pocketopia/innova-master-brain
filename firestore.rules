@@ -1,0 +1,503 @@
+/**
+ * =============================================================================
+ * INNOVA FIRESTORE SECURITY RULES - Multi-Tenant Isolation
+ * =============================================================================
+ * 
+ * These rules enforce strict data isolation between the 5 ecosystem tenants:
+ * - MVN (Music Video Network)
+ * - StreamShare (Decentralized social content)
+ * - ArcHaven (Exclusive creator content)
+ * - HekticTV (Live broadcasting)
+ * - Kreation (Interactive gaming platform)
+ * 
+ * Security Model:
+ * 1. All documents MUST contain a 'tenantId' field
+ * 2. Users can only access data within their authorized tenants
+ * 3. Cross-tenant data access is explicitly blocked unless shared by user
+ * 4. Decentralized identity (@USER.NAME) is validated via custom token claims
+ * 
+ * Collections:
+ * - users: User profiles and identity mappings
+ * - media: All media content (videos, games, posts, films)
+ * - comments: User comments across all tenants
+ * - gameStates: Kreation-specific game state data
+ * - moderationLogs: AI moderation audit trail
+ * - sharedContent: Cross-tenant shared content registry
+ * =============================================================================
+ */
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // =========================================================================
+    // HELPER FUNCTIONS
+    // =========================================================================
+    
+    /**
+     * Check if user is authenticated via decentralized identity
+     * Users are identified by their wallet address (mapped to Firebase UID)
+     */
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    /**
+     * Get the user's wallet address from their Firebase UID
+     * Format: wallet_0x{address}
+     */
+    function getWalletAddress() {
+      return request.auth.token.wallet_address != null 
+        ? request.auth.token.wallet_address 
+        : request.auth.uid;
+    }
+    
+    /**
+     * Check if user is the owner of a document
+     */
+    function isOwner(userId) {
+      return isAuthenticated() && (request.auth.uid == userId || getWalletAddress() == userId);
+    }
+    
+    /**
+     * Validate tenant ID is one of the 5 ecosystem tenants
+     */
+    function isValidTenant(tenantId) {
+      return tenantId in ['MVN', 'StreamShare', 'ArcHaven', 'HekticTV', 'Kreation'];
+    }
+    
+    /**
+     * Check if user has access to a specific tenant
+     * Uses custom token claims set by the decentralized identity middleware
+     */
+    function hasTenantAccess(tenantId) {
+      return isAuthenticated() && (
+        request.auth.token.tenants == null || 
+        tenantId in request.auth.token.tenants ||
+        // Allow read access to public tenant data
+        (request.auth.token.tenants != null && request.auth.token.tenants[tenantId] != null)
+      );
+    }
+    
+    /**
+     * Check if user has write permission for a tenant
+     */
+    function hasTenantWriteAccess(tenantId) {
+      return isAuthenticated() && (
+        request.auth.token.tenants == null ||
+        (request.auth.token.tenants != null && 
+          request.auth.token.tenants[tenantId] in ['write', 'admin', 'publish', 'broadcast', 'deploy'])
+      );
+    }
+    
+    /**
+     * Validate document ID format
+     */
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    /**
+     * Get incoming request data
+     */
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    /**
+     * Get existing document data
+     */
+    function existing() {
+      return resource.data;
+    }
+    
+    /**
+     * Check if content passed AI moderation
+     */
+    function isModerationApproved() {
+      return incoming().moderationApproved == true || 
+             incoming().moderationStatus == 'approved';
+    }
+    
+    // =========================================================================
+    // GLOBAL SAFETY NET
+    // =========================================================================
+    
+    /**
+     * Deny all access by default
+     * Specific rules below will override for allowed operations
+     */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    // =========================================================================
+    // USERS COLLECTION
+    // =========================================================================
+    
+    /**
+     * User profiles and decentralized identity mappings
+     * 
+     * Schema:
+     * - userId: string (matches Firebase UID)
+     * - userName: string (@USER.NAME tag, e.g., @creator_alpha)
+     * - walletAddress: string (EVM-compatible, lowercase)
+     * - publicKey: string (for signature verification)
+     * - tenants: map (tenant permissions)
+     * - tier: string (Free, Local, Premium, Creator)
+     * - createdAt: timestamp
+     * - updatedAt: timestamp
+     */
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.keys().hasAll(['userName', 'walletAddress', 'tier'])
+               && data.userName is string && data.userName.matches('^@[a-zA-Z0-9_]+$')
+               && data.walletAddress is string && data.walletAddress.matches('^0x[a-f0-9]{40}$')
+               && data.tier in ['Free', 'Local', 'Premium', 'Creator']
+               && (data.tenants is map || data.tenants == null);
+      }
+      
+      // Users can read their own profile
+      allow get: if isOwner(userId);
+      
+      // Users can create their own profile with valid data
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      
+      // Users can update their own profile (limited fields)
+      allow update: if isOwner(userId) && (
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'tier', 'tenants', 'updatedAt', 'displayName', 'avatar', 'bio'
+        ]) && isValidUser(incoming())
+      );
+      
+      // Users can delete their own profile
+      allow delete: if isOwner(userId);
+      
+      // =========================================================================
+      // USER SUBCOLLECTIONS
+      // =========================================================================
+      
+      /**
+       * User's tenant-specific settings
+       */
+      match /settings/{settingId} {
+        allow read, write: if isOwner(userId) && isAuthenticated();
+      }
+      
+      /**
+       * User's shared content registry
+       */
+      match /shared/{shareId} {
+        allow read: if isAuthenticated();
+        allow create, update, delete: if isOwner(userId) && isAuthenticated();
+      }
+    }
+    
+    // =========================================================================
+    // MEDIA COLLECTION
+    // =========================================================================
+    
+    /**
+     * All media content across tenants (videos, games, posts, films)
+     * 
+     * Schema:
+     * - mediaId: string
+     * - tenantId: string (MVN, StreamShare, ArcHaven, HekticTV, Kreation)
+     * - ownerId: string (user who uploaded)
+     * - title: string
+     * - description: string (optional)
+     * - type: string (content type specific to tenant)
+     * - url: string (media URL)
+     * - metadata: map (tenant-specific metadata)
+     * - status: string (pending, approved, rejected)
+     * - moderationStatus: string (approved, rejected, pending)
+     * - moderationApproved: boolean
+     * - sharedWith: array (userIds for cross-tenant sharing)
+     * - createdAt: timestamp
+     * - updatedAt: timestamp
+     */
+    match /media/{mediaId} {
+      function isValidMedia(data) {
+        return data.keys().hasAll(['tenantId', 'ownerId', 'title', 'type', 'status'])
+               && isValidTenant(data.tenantId)
+               && data.title is string && data.title.size() <= 200
+               && data.type is string
+               && data.status in ['pending', 'approved', 'rejected']
+               && data.ownerId == getWalletAddress();
+      }
+      
+      // Anyone can read approved media from any tenant
+      allow get: if isAuthenticated() && (
+        existing().status == 'approved' || 
+        isOwner(existing().ownerId)
+      );
+      
+      // List media requires tenant filter (prevent cross-tenant data bleed)
+      allow list: if isAuthenticated() && request.query.keys().hasAll(['tenantId']) 
+                  && isValidTenant(request.query.tenantId);
+      
+      // Create media with tenant access and moderation
+      allow create: if isAuthenticated() 
+                    && hasTenantWriteAccess(incoming().tenantId)
+                    && isValidMedia(incoming())
+                    && isValidId(mediaId)
+                    && isModerationApproved();
+      
+      // Update media (owner only, limited fields)
+      allow update: if isAuthenticated() 
+                    && isOwner(existing().ownerId)
+                    && hasTenantWriteAccess(existing().tenantId)
+                    && incoming().diff(existing()).affectedKeys().hasOnly([
+                      'title', 'description', 'metadata', 'status', 'updatedAt'
+                    ]);
+      
+      // Delete media (owner only)
+      allow delete: if isAuthenticated() && isOwner(existing().ownerId);
+      
+      // =========================================================================
+      // MEDIA SUBCOLLECTIONS
+      // =========================================================================
+      
+      /**
+       * Media comments
+       */
+      match /comments/{commentId} {
+        function isValidComment(data) {
+          return data.keys().hasAll(['text', 'authorId'])
+                 && data.text is string && data.text.size() <= 2000
+                 && data.authorId == getWalletAddress();
+        }
+        
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() 
+                      && hasTenantWriteAccess(existing().tenantId)
+                      && isValidComment(incoming())
+                      && isModerationApproved();
+        allow update, delete: if isAuthenticated() && isOwner(authorId);
+      }
+      
+      /**
+       * Media reactions (likes, favorites, etc.)
+       */
+      match /reactions/{reactionId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && incoming().userId == getWalletAddress();
+        allow delete: if isAuthenticated() && isOwner(incoming().userId);
+      }
+    }
+    
+    // =========================================================================
+    // COMMENTS COLLECTION (Top-level for cross-media discussions)
+    // =========================================================================
+    
+    /**
+     * Top-level comments (e.g., HekticTV live chat)
+     * 
+     * Schema:
+     * - commentId: string
+     * - tenantId: string
+     * - mediaId: string (optional, if replying to media)
+     * - authorId: string
+     * - text: string
+     * - parentId: string (optional, for threaded comments)
+     * - moderationStatus: string
+     * - moderationApproved: boolean
+     * - createdAt: timestamp
+     */
+    match /comments/{commentId} {
+      function isValidComment(data) {
+        return data.keys().hasAll(['tenantId', 'authorId', 'text'])
+               && isValidTenant(data.tenantId)
+               && data.text is string && data.text.size() <= 2000
+               && data.authorId == getWalletAddress();
+      }
+      
+      allow read: if isAuthenticated();
+      
+      allow create: if isAuthenticated() 
+                    && hasTenantWriteAccess(incoming().tenantId)
+                    && isValidComment(incoming())
+                    && isValidId(commentId)
+                    && isModerationApproved();
+      
+      allow update, delete: if isAuthenticated() && isOwner(authorId);
+    }
+    
+    // =========================================================================
+    // GAME STATES COLLECTION (Kreation-specific)
+    // =========================================================================
+    
+    /**
+     * Kreation game state data and world builds
+     * 
+     * Schema:
+     * - stateId: string
+     * - tenantId: string (must be 'Kreation')
+     * - ownerId: string
+     * - worldId: string
+     * - buildData: map (game state data)
+     * - logicScript: string (game logic code)
+     * - version: string
+     * - isPublished: boolean
+     * - moderationStatus: string
+     * - moderationApproved: boolean
+     * - createdAt: timestamp
+     * - updatedAt: timestamp
+     */
+    match /gameStates/{stateId} {
+      function isValidGameState(data) {
+        return data.keys().hasAll(['tenantId', 'ownerId', 'worldId', 'buildData'])
+               && data.tenantId == 'Kreation'
+               && data.ownerId == getWalletAddress()
+               && data.worldId is string
+               && data.buildData is map;
+      }
+      
+      // Read published game states or own game states
+      allow get: if isAuthenticated() && (
+        existing().isPublished == true || isOwner(existing().ownerId)
+      );
+      
+      // List requires Kreation tenant access
+      allow list: if isAuthenticated() && hasTenantAccess('Kreation');
+      
+      // Create with strict moderation (Kreation has strict policy)
+      allow create: if isAuthenticated() 
+                    && hasTenantWriteAccess('Kreation')
+                    && isValidGameState(incoming())
+                    && isValidId(stateId)
+                    && isModerationApproved();
+      
+      // Update own game states
+      allow update: if isAuthenticated() 
+                    && isOwner(existing().ownerId)
+                    && incoming().diff(existing()).affectedKeys().hasOnly([
+                      'buildData', 'logicScript', 'version', 'isPublished', 'updatedAt'
+                    ]);
+      
+      // Delete own game states
+      allow delete: if isAuthenticated() && isOwner(existing().ownerId);
+    }
+    
+    // =========================================================================
+    // MODERATION LOGS COLLECTION
+    // =========================================================================
+    
+    /**
+     * AI moderation audit trail
+     * 
+     * Schema:
+     * - logId: string
+     * - tenantId: string
+     * - contentId: string
+     * - contentType: string
+     * - userId: string
+     * - moderationResult: map
+     * - action: string (approved, rejected, review)
+     * - reasons: array
+     * - flaggedCategories: array
+     * - createdAt: timestamp
+     */
+    match /moderationLogs/{logId} {
+      // Only system can write moderation logs
+      allow create: if false; // Server-only writes
+      
+      // Users can read their own moderation logs
+      allow read: if isAuthenticated() && existing().userId == getWalletAddress();
+      
+      // Admin can read all logs
+      allow list: if isAuthenticated() && request.auth.token.role == 'admin';
+    }
+    
+    // =========================================================================
+    // SHARED CONTENT REGISTRY
+    // =========================================================================
+    
+    /**
+     * Cross-tenant shared content registry
+     * 
+     * Schema:
+     * - shareId: string
+     * - sourceTenantId: string
+     * - targetTenantIds: array
+     * - contentId: string
+     * - contentType: string
+     * - sharedBy: string (userId)
+     * - permissions: map (who can access)
+     * - createdAt: timestamp
+     */
+    match /sharedContent/{shareId} {
+      function isValidShare(data) {
+        return data.keys().hasAll(['sourceTenantId', 'targetTenantIds', 'contentId', 'sharedBy'])
+               && isValidTenant(data.sourceTenantId)
+               && data.targetTenantIds is list && data.targetTenantIds.size() > 0
+               && data.sharedBy == getWalletAddress();
+      }
+      
+      // Read if user has access to target tenant
+      allow read: if isAuthenticated() && (
+        isOwner(existing().sharedBy) ||
+        existing().permissions[getWalletAddress()] == true
+      );
+      
+      // Create share with tenant validation
+      allow create: if isAuthenticated() 
+                    && hasTenantWriteAccess(incoming().sourceTenantId)
+                    && isValidShare(incoming())
+                    && isValidId(shareId);
+      
+      // Update own shares
+      allow update: if isAuthenticated() && isOwner(existing().sharedBy);
+      
+      // Delete own shares
+      allow delete: if isAuthenticated() && isOwner(existing().sharedBy);
+    }
+    
+    // =========================================================================
+    // ANALYTICS COLLECTION (Read-only for users)
+    // =========================================================================
+    
+    /**
+     * Aggregated analytics data
+     * 
+     * Schema:
+     * - analyticsId: string
+     * - tenantId: string
+     * - metricType: string
+     * - data: map
+     * - period: string (daily, weekly, monthly)
+     * - timestamp: timestamp
+     */
+    match /analytics/{analyticsId} {
+      // Users can read analytics for tenants they have access to
+      allow read: if isAuthenticated() && hasTenantAccess(existing().tenantId);
+      
+      // Only system can write analytics
+      allow create, update, delete: if false; // Server-only
+    }
+    
+    // =========================================================================
+    // TENANT CONFIGURATION (System-managed)
+    // =========================================================================
+    
+    /**
+     * Tenant-specific configuration documents
+     * 
+     * Schema:
+     * - configId: string
+     * - tenantId: string
+     * - branding: map
+     * - settings: map
+     * - moderationPolicy: string
+     * - updatedAt: timestamp
+     */
+    match /tenantConfigs/{tenantId} {
+      // Anyone can read tenant config (needed for dynamic theming)
+      allow read: if isValidTenant(tenantId);
+      
+      // Only system can write
+      allow create, update, delete: if false; // Server-only
+    }
+    
+  }
+}

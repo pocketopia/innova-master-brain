@@ -1,0 +1,51 @@
+{
+  "entities": {
+    "Content": {
+      "title": "Platform Content",
+      "description": "Represents a piece of media (video or game) in the multi-tenant system.",
+      "type": "object",
+      "properties": {
+        "platform_id": {
+          "type": "string",
+          "enum": ["MVN", "StreamShare", "ArcHaven", "HekticTV", "VaultStream"],
+          "description": "The unique identifier for the streaming brand."
+        },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "url": { "type": "string", "description": "HLS .m3u8 or Game Build URL." },
+        "type": { "type": "string", "enum": ["video", "game"] },
+        "metadata": {
+          "type": "object",
+          "description": "Brand-specific metadata (e.g., ISRC, scene markers, AI scores, game mappings)."
+        },
+        "ownerId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["platform_id", "title", "url", "type", "ownerId", "status", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user data, subscription tiers, and credits.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "tier": { "type": "string", "enum": ["Free", "Local", "Premium", "Creator"] },
+        "paid_rotation_credits": { "type": "integer" },
+        "isAdmin": { "type": "boolean" }
+      },
+      "required": ["email", "tier"]
+    }
+  },
+  "firestore": {
+    "/content/{contentId}": {
+      "schema": "Content",
+      "description": "Global collection of all media curated by platform_id."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User account information and billing status."
+    }
+  }
+}
