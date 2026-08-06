@@ -44,6 +44,27 @@ router.post('/spend', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Amount, wallet address, and transaction type required' });
   }
 
+  // GOD MODE: Check if the requester is the admin OR if it's a creator boost
+  const requester = req.headers['x-user-name'];
+  
+  // GOD MODE: If Admin is airdropping, bypass all balance checks and mint the tokens!
+  if (requester === '@TICKER' || txType === 'creator_boost') {
+    const currentBalance = ecosystemLedger.has(walletAddress) ? ecosystemLedger.get(walletAddress)! : DEFAULT_BALANCE;
+    const newBalance = currentBalance + amount;
+    
+    // Update the ledger with the minted tokens
+    ecosystemLedger.set(walletAddress, newBalance);
+    
+    console.log(`[GOD MODE] Minting ${amount} $INVA to ${walletAddress}`);
+    
+    return res.json({ 
+      success: true, 
+      newBalance, 
+      receipt: "MINT_" + Date.now(),
+      message: "Treasury Airdrop Successful"
+    });
+  }
+
   const currentBalance = ecosystemLedger.has(walletAddress) ? ecosystemLedger.get(walletAddress)! : DEFAULT_BALANCE;
   
   if (currentBalance < amount) {
