@@ -37,6 +37,34 @@ const router = Router();
 // =============================================================================
 
 /**
+ * Global Registry for Case-Insensitive Username Uniqueness
+ * This Map stores normalized (lowercase) usernames to prevent collision attacks
+ * e.g., "ticker", "Ticker", "TICKER" all map to the same entry
+ */
+const registeredUsernames = new Map<string, string>();
+
+/**
+ * Normalize username for uniqueness check (case-insensitive)
+ */
+function normalizeUsername(userName: string): string {
+  return userName.toLowerCase();
+}
+
+/**
+ * Check if a username (case-insensitive) is already registered
+ */
+function isUsernameTaken(normalizedUserName: string): boolean {
+  return registeredUsernames.has(normalizedUserName);
+}
+
+/**
+ * Register a username in the global registry (case-insensitive)
+ */
+function registerUsername(normalizedUserName: string, actualUserName: string): void {
+  registeredUsernames.set(normalizedUserName, actualUserName);
+}
+
+/**
  * @USER.NAME Identity Document Structure in Firebase
  * 
  * Stored in collection: identities
@@ -223,6 +251,18 @@ router.post("/register", async (req: Request, res: Response) => {
     const db = getFirestore();
     const userId = userName.substring(1); // Remove @ prefix for document ID
     
+    // SECURITY: Check case-insensitive username uniqueness
+    // Prevents "ticker", "Ticker", "TICKER" from all being registered
+    const normalizedUserName = normalizeUsername(userName);
+    if (isUsernameTaken(normalizedUserName)) {
+      res.status(409).json({
+        error: "Identity already registered",
+        message: `A username similar to "${userName}" is already claimed (case-insensitive)`,
+        suggestion: "Try a different @USER.NAME - usernames are case-insensitive unique",
+      });
+      return;
+    }
+    
     // Check if @USER.NAME is already claimed
     const existingRef = db.collection("identities").doc(userId);
     const existingDoc = await existingRef.get();
@@ -280,6 +320,9 @@ router.post("/register", async (req: Request, res: Response) => {
     };
     
     await existingRef.set(identityData);
+    
+    // SECURITY: Register username in case-insensitive registry after successful creation
+    registerUsername(normalizedUserName, userName);
     
     // Also create user document in users collection (for unified schema)
     // CROSS-TENANT DATA INTEGRITY: tenantId is explicitly set

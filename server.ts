@@ -31,6 +31,8 @@ import path from "path";
 import cors from "cors";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { GoogleGenAI, Type } from "@google/genai";
 import { initializeApp, getApps, cert, ServiceAccount } from "firebase-admin/app";
 import { getFirestore, Firestore } from "firebase-admin/firestore";
@@ -730,7 +732,11 @@ async function moderateContent(request: ModerationRequest): Promise<ModerationRe
       },
     });
     
-    const result = JSON.parse(response.text) as ModerationResponse;
+    const responseText = response.text;
+    if (!responseText) {
+      throw new Error("Empty response from GenAI");
+    }
+    const result = JSON.parse(responseText) as ModerationResponse;
     
     // Validate response
     if (typeof result.approved !== "boolean") {
@@ -1303,6 +1309,73 @@ async function startServer() {
   // =============================================================================
   // EXPRESS MIDDLEWARE STACK
   // =============================================================================
+  
+  // SECURITY: Helmet for secure HTTP headers
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "blob:"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "https://*.firebaseio.com", "wss://*.firebaseio.com"],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'none'"],
+      },
+    },
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
+    noSniff: true,
+    xssFilter: true,
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  }));
+  
+  // SECURITY: Rate limiting for API routes
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per windowMs
+    message: {
+      error: "Too many requests",
+      message: "You have exceeded the rate limit. Please try again later.",
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  
+  // Stricter rate limiting for authentication routes
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 20, // Limit each IP to 20 auth requests per windowMs
+    message: {
+      error: "Too many authentication attempts",
+      message: "You have exceeded the authentication rate limit. Please try again later.",
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  
+  // Stricter rate limiting for wallet routes
+  const walletLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 50, // Limit each IP to 50 wallet requests per windowMs
+    message: {
+      error: "Too many wallet requests",
+      message: "You have exceeded the wallet rate limit. Please try again later.",
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  
+  // Apply rate limiters to specific routes
+  app.use("/api/identity", authLimiter);
+  app.use("/api/auth", authLimiter);
+  app.use("/api/wallet", walletLimiter);
+  app.use("/api", apiLimiter);
   
   // CORS configuration for multi-tenant frontend
   app.use(cors({
