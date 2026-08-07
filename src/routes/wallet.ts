@@ -2,9 +2,84 @@ import express, { Request, Response } from 'express';
 
 const router = express.Router();
 
-// Simulated global ledger for the prototype (Maps Wallet Address -> Token Balance)
-const ecosystemLedger = new Map<string, number>();
+// =============================================================================
+// USER STATE SCHEMA
+// =============================================================================
+
+/**
+ * Registered Device Information
+ * Represents a Ring Comm hardware device bound to a user's account
+ */
+export interface RegisteredDevice {
+  /** Unique device identifier (hardware-generated) */
+  deviceId: string;
+  /** Human-readable device name (e.g., "Ring Comm Pro #1") */
+  deviceName: string;
+  /** Public key for this device (hex-encoded Ed25519) */
+  publicKey?: string;
+  /** When this device was registered */
+  registeredAt: string;
+  /** Last time this device was used for authentication */
+  lastUsedAt?: string;
+  /** Device status */
+  status: 'active' | 'revoked' | 'lost';
+}
+
+/**
+ * Complete User State in the Ecosystem Ledger
+ * Extends beyond simple balance to include full user profile
+ */
+export interface UserState {
+  /** Token balance in $INVA */
+  balance: number;
+  /** Avatar URL for the user's profile */
+  avatarUrl?: string;
+  /** Array of registered Ring Comm devices for passwordless auth */
+  registeredDevices: RegisteredDevice[];
+  /** When the user state was created */
+  createdAt: string;
+  /** When the user state was last updated */
+  updatedAt: string;
+}
+
+// Simulated global ledger for the prototype (Maps Wallet Address -> UserState)
+const ecosystemLedger = new Map<string, UserState>();
+
 const DEFAULT_BALANCE = 0;
+
+/**
+ * Get or create user state for a wallet address
+ */
+function getOrCreateUserState(walletAddress: string): UserState {
+  const normalizedAddress = walletAddress.toLowerCase();
+  const existingState = ecosystemLedger.get(normalizedAddress);
+  
+  if (existingState) {
+    return existingState;
+  }
+  
+  const newState: UserState = {
+    balance: DEFAULT_BALANCE,
+    avatarUrl: undefined,
+    registeredDevices: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  
+  ecosystemLedger.set(normalizedAddress, newState);
+  return newState;
+}
+
+/**
+ * Update user state and refresh the updatedAt timestamp
+ */
+function updateUserState(walletAddress: string, updates: Partial<UserState>): UserState {
+  const normalizedAddress = walletAddress.toLowerCase();
+  const state = getOrCreateUserState(normalizedAddress);
+  const updatedState = { ...state, ...updates, updatedAt: new Date().toISOString() };
+  ecosystemLedger.set(normalizedAddress, updatedState);
+  return updatedState;
+}
 
 // =============================================================================
 // MVN BILLING TIERS CONFIGURATION
@@ -51,8 +126,8 @@ export function getMVNTierInfo(txType: string) {
 
 router.get('/balance/:walletAddress', (req: Request, res: Response) => {
   const { walletAddress } = req.params;
-  const balance = ecosystemLedger.has(walletAddress) ? ecosystemLedger.get(walletAddress) : DEFAULT_BALANCE;
-  res.json({ balance });
+  const userState = getOrCreateUserState(walletAddress);
+  res.json({ balance: userState.balance });
 });
 
 router.post('/mint', (req: Request, res: Response) => {
@@ -64,11 +139,11 @@ router.post('/mint', (req: Request, res: Response) => {
 
   // Simulate banking/Stripe processing delay
   setTimeout(() => {
-    const currentBalance = ecosystemLedger.has(walletAddress) ? ecosystemLedger.get(walletAddress)! : DEFAULT_BALANCE;
-    const newBalance = currentBalance + amount;
+    const userState = getOrCreateUserState(walletAddress);
+    const newBalance = userState.balance + amount;
     
-    // Update the ledger
-    ecosystemLedger.set(walletAddress, newBalance);
+    // Update the ledger with new balance
+    updateUserState(walletAddress, { balance: newBalance });
     
     console.log(`[WALLET ENGINE] Processed $${(amount * 0.01).toFixed(2)} USD -> Minted ${amount} $INVA for ${walletAddress}`);
     
@@ -92,11 +167,11 @@ router.post('/spend', (req: Request, res: Response) => {
   
   // TREASURY ADMIN: If Admin is airdropping, bypass all balance checks and mint the tokens!
   if (requester === '@TICKER' || txType === 'creator_boost') {
-    const currentBalance = ecosystemLedger.has(walletAddress) ? ecosystemLedger.get(walletAddress) : DEFAULT_BALANCE;
-    const newBalance = currentBalance + amount;
+    const userState = getOrCreateUserState(walletAddress);
+    const newBalance = userState.balance + amount;
     
     // Update the ledger with the minted tokens
-    ecosystemLedger.set(walletAddress, newBalance);
+    updateUserState(walletAddress, { balance: newBalance });
     
     // Production log (no debug details)
     console.log(`[TREASURY] Admin airdrop: ${amount} $INVA to ${walletAddress}`);
@@ -124,14 +199,14 @@ router.post('/spend', (req: Request, res: Response) => {
       });
     }
     
-    const currentBalance = ecosystemLedger.has(walletAddress) ? ecosystemLedger.get(walletAddress)! : DEFAULT_BALANCE;
+    const userState = getOrCreateUserState(walletAddress);
     
-    if (currentBalance < amount) {
-      return res.status(400).json({ error: 'Insufficient $INVA balance for subscription', currentBalance, required: amount });
+    if (userState.balance < amount) {
+      return res.status(400).json({ error: 'Insufficient $INVA balance for subscription', currentBalance: userState.balance, required: amount });
     }
     
-    const newBalance = currentBalance - amount;
-    ecosystemLedger.set(walletAddress, newBalance);
+    const newBalance = userState.balance - amount;
+    updateUserState(walletAddress, { balance: newBalance });
     
     console.log(`[SUBSCRIPTION] ${txType} activated for ${walletAddress} (${tierInfo.billingCycle})`);
     
@@ -149,15 +224,15 @@ router.post('/spend', (req: Request, res: Response) => {
     });
   }
 
-  const currentBalance = ecosystemLedger.has(walletAddress) ? ecosystemLedger.get(walletAddress)! : DEFAULT_BALANCE;
+  const userState = getOrCreateUserState(walletAddress);
   
-  if (currentBalance < amount) {
-    return res.status(400).json({ error: 'Insufficient $INVA balance', currentBalance });
+  if (userState.balance < amount) {
+    return res.status(400).json({ error: 'Insufficient $INVA balance', currentBalance: userState.balance });
   }
 
   // Deduct the tokens
-  const newBalance = currentBalance - amount;
-  ecosystemLedger.set(walletAddress, newBalance);
+  const newBalance = userState.balance - amount;
+  updateUserState(walletAddress, { balance: newBalance });
   
   // Log the specific SaaS / Eco-commerce transaction
   console.log(`[WALLET ENGINE] TX [${txType.toUpperCase()}] - Deducted ${amount} $INVA from ${walletAddress}`);
@@ -168,6 +243,392 @@ router.post('/spend', (req: Request, res: Response) => {
     newBalance, 
     receipt: `tx_${txType}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
   });
+});
+
+// =============================================================================
+// USER PROFILE ROUTES
+// =============================================================================
+
+/**
+ * Request body for updating user profile
+ */
+interface ProfileUpdateRequest {
+  avatarUrl?: string;
+}
+
+/**
+ * Request body for registering a new device
+ */
+interface RegisterDeviceRequest {
+  walletAddress: string;
+  deviceId: string;
+  deviceName: string;
+  publicKey?: string;
+}
+
+/**
+ * PUT /api/user/profile
+ * Update user profile information including avatar URL
+ */
+router.put('/user/profile', (req: Request, res: Response) => {
+  const { walletAddress, avatarUrl } = req.body;
+  
+  if (!walletAddress) {
+    return res.status(400).json({
+      error: 'Missing required fields',
+      message: 'walletAddress is required to update profile'
+    });
+  }
+  
+  try {
+    const userState = getOrCreateUserState(walletAddress);
+    
+    // Build update data with only provided fields
+    const updateData: ProfileUpdateRequest = {};
+    if (avatarUrl !== undefined) {
+      // Validate avatarUrl format if provided
+      if (typeof avatarUrl === 'string' && avatarUrl.length > 0) {
+        try {
+          new URL(avatarUrl);
+          updateData.avatarUrl = avatarUrl;
+        } catch {
+          return res.status(400).json({
+            error: 'Invalid avatar URL',
+            message: 'avatarUrl must be a valid URL'
+          });
+        }
+      } else if (avatarUrl === null) {
+        // Allow null to clear avatar
+        updateData.avatarUrl = undefined;
+      }
+    }
+    
+    // Update user state
+    const updatedState = updateUserState(walletAddress, updateData);
+    
+    console.log(`[PROFILE] Updated profile for ${walletAddress}`);
+    
+    res.json({
+      success: true,
+      profile: {
+        avatarUrl: updatedState.avatarUrl,
+        registeredDevices: updatedState.registeredDevices.map(d => ({
+          deviceId: d.deviceId,
+          deviceName: d.deviceName,
+          registeredAt: d.registeredAt,
+          lastUsedAt: d.lastUsedAt,
+          status: d.status,
+        })),
+        updatedAt: updatedState.updatedAt,
+      },
+      message: 'Profile updated successfully'
+    });
+    
+  } catch (error) {
+    console.error('[PROFILE] Update error:', error);
+    res.status(500).json({
+      error: 'Profile update failed',
+      message: 'An error occurred while updating your profile'
+    });
+  }
+});
+
+/**
+ * GET /api/user/profile/:walletAddress
+ * Get user profile information
+ */
+router.get('/user/profile/:walletAddress', (req: Request, res: Response) => {
+  const { walletAddress } = req.params;
+  
+  try {
+    const userState = getOrCreateUserState(walletAddress);
+    
+    res.json({
+      success: true,
+      profile: {
+        walletAddress: walletAddress.toLowerCase(),
+        avatarUrl: userState.avatarUrl,
+        registeredDevices: userState.registeredDevices.map(d => ({
+          deviceId: d.deviceId,
+          deviceName: d.deviceName,
+          registeredAt: d.registeredAt,
+          lastUsedAt: d.lastUsedAt,
+          status: d.status,
+        })),
+        balance: userState.balance,
+        createdAt: userState.createdAt,
+        updatedAt: userState.updatedAt,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[PROFILE] Fetch error:', error);
+    res.status(500).json({
+      error: 'Profile fetch failed',
+      message: 'An error occurred while fetching the profile'
+    });
+  }
+});
+
+// =============================================================================
+// DEVICE REGISTRATION ROUTES (Ring Comm)
+// =============================================================================
+
+/**
+ * POST /api/auth/register-device
+ * Register a Ring Comm device as a passwordless authentication token
+ * 
+ * This endpoint accepts a device handshake payload and saves it to the user's
+ * profile, officially registering it as a passwordless auth token.
+ */
+router.post('/auth/register-device', (req: Request, res: Response) => {
+  const { walletAddress, deviceId, deviceName, publicKey } = req.body as RegisterDeviceRequest;
+  
+  // Validate required fields
+  if (!walletAddress || !deviceId || !deviceName) {
+    return res.status(400).json({
+      error: 'Missing required fields',
+      message: 'walletAddress, deviceId, and deviceName are required',
+      required: ['walletAddress', 'deviceId', 'deviceName']
+    });
+  }
+  
+  // Validate deviceId format (should be alphanumeric with optional hyphens)
+  if (!/^[a-zA-Z0-9\-_]{8,64}$/.test(deviceId)) {
+    return res.status(400).json({
+      error: 'Invalid device ID format',
+      message: 'deviceId must be 8-64 alphanumeric characters, hyphens, or underscores'
+    });
+  }
+  
+  // Validate publicKey format if provided (hex-encoded Ed25519 = 64 chars)
+  if (publicKey && !/^[a-fA-F0-9]{64}$/.test(publicKey)) {
+    return res.status(400).json({
+      error: 'Invalid public key format',
+      message: 'publicKey must be a 64-character hex-encoded Ed25519 public key'
+    });
+  }
+  
+  try {
+    const userState = getOrCreateUserState(walletAddress);
+    
+    // Check if device is already registered
+    const existingDeviceIndex = userState.registeredDevices.findIndex(
+      d => d.deviceId === deviceId
+    );
+    
+    if (existingDeviceIndex !== -1) {
+      // Update existing device
+      const existingDevice = userState.registeredDevices[existingDeviceIndex];
+      if (existingDevice.status === 'revoked') {
+        return res.status(400).json({
+          error: 'Device revoked',
+          message: 'This device has been revoked and cannot be re-registered'
+        });
+      }
+      
+      // Update device info
+      userState.registeredDevices[existingDeviceIndex] = {
+        ...existingDevice,
+        deviceName: deviceName,
+        publicKey: publicKey || existingDevice.publicKey,
+        lastUsedAt: new Date().toISOString(),
+      };
+    } else {
+      // Check device limit (max 10 devices per user)
+      if (userState.registeredDevices.length >= 10) {
+        return res.status(400).json({
+          error: 'Device limit reached',
+          message: 'Maximum 10 devices can be registered per account',
+          currentCount: userState.registeredDevices.length
+        });
+      }
+      
+      // Add new device
+      const newDevice: RegisteredDevice = {
+        deviceId,
+        deviceName,
+        publicKey,
+        registeredAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString(),
+        status: 'active',
+      };
+      
+      userState.registeredDevices.push(newDevice);
+    }
+    
+    // Save updated state
+    updateUserState(walletAddress, { registeredDevices: userState.registeredDevices });
+    
+    console.log(`[DEVICE] Registered device ${deviceId} for ${walletAddress}`);
+    
+    res.status(201).json({
+      success: true,
+      device: {
+        deviceId,
+        deviceName,
+        registeredAt: userState.registeredDevices.find(d => d.deviceId === deviceId)?.registeredAt,
+        status: 'active',
+      },
+      totalDevices: userState.registeredDevices.length,
+      message: `Ring Comm device "${deviceName}" successfully registered`
+    });
+    
+  } catch (error) {
+    console.error('[DEVICE] Registration error:', error);
+    res.status(500).json({
+      error: 'Device registration failed',
+      message: 'An error occurred while registering your device'
+    });
+  }
+});
+
+/**
+ * POST /api/auth/verify-device
+ * Verify a device handshake for authentication
+ */
+router.post('/auth/verify-device', (req: Request, res: Response) => {
+  const { walletAddress, deviceId, signature, challenge } = req.body;
+  
+  if (!walletAddress || !deviceId || !signature) {
+    return res.status(400).json({
+      error: 'Missing required fields',
+      message: 'walletAddress, deviceId, and signature are required'
+    });
+  }
+  
+  try {
+    const userState = getOrCreateUserState(walletAddress);
+    
+    // Find the device
+    const device = userState.registeredDevices.find(
+      d => d.deviceId === deviceId && d.status === 'active'
+    );
+    
+    if (!device) {
+      return res.status(404).json({
+        error: 'Device not found',
+        message: `No active device found with ID "${deviceId}" for this account`
+      });
+    }
+    
+    // In production, verify the signature against the device's public key
+    // For demo mode, accept valid-looking signatures
+    const signatureValid = /^[a-fA-F0-9]{128}$/.test(signature);
+    
+    if (!signatureValid) {
+      return res.status(403).json({
+        error: 'Signature verification failed',
+        message: 'Device signature could not be verified'
+      });
+    }
+    
+    // Update last used timestamp
+    const deviceIndex = userState.registeredDevices.findIndex(d => d.deviceId === deviceId);
+    if (deviceIndex !== -1) {
+      userState.registeredDevices[deviceIndex].lastUsedAt = new Date().toISOString();
+      updateUserState(walletAddress, { registeredDevices: userState.registeredDevices });
+    }
+    
+    console.log(`[DEVICE] Verified device ${deviceId} for ${walletAddress}`);
+    
+    res.json({
+      success: true,
+      verified: true,
+      device: {
+        deviceId,
+        deviceName: device.deviceName,
+        lastUsedAt: device.lastUsedAt,
+      },
+      message: 'Device verified successfully'
+    });
+    
+  } catch (error) {
+    console.error('[DEVICE] Verification error:', error);
+    res.status(500).json({
+      error: 'Device verification failed',
+      message: 'An error occurred while verifying your device'
+    });
+  }
+});
+
+/**
+ * DELETE /api/auth/revoke-device
+ * Revoke a registered device
+ */
+router.delete('/auth/revoke-device', (req: Request, res: Response) => {
+  const { walletAddress, deviceId } = req.body;
+  
+  if (!walletAddress || !deviceId) {
+    return res.status(400).json({
+      error: 'Missing required fields',
+      message: 'walletAddress and deviceId are required'
+    });
+  }
+  
+  try {
+    const userState = getOrCreateUserState(walletAddress);
+    
+    const deviceIndex = userState.registeredDevices.findIndex(
+      d => d.deviceId === deviceId
+    );
+    
+    if (deviceIndex === -1) {
+      return res.status(404).json({
+        error: 'Device not found',
+        message: `No device found with ID "${deviceId}"`
+      });
+    }
+    
+    // Mark device as revoked
+    userState.registeredDevices[deviceIndex].status = 'revoked';
+    updateUserState(walletAddress, { registeredDevices: userState.registeredDevices });
+    
+    console.log(`[DEVICE] Revoked device ${deviceId} for ${walletAddress}`);
+    
+    res.json({
+      success: true,
+      message: `Device "${userState.registeredDevices[deviceIndex].deviceName}" has been revoked`
+    });
+    
+  } catch (error) {
+    console.error('[DEVICE] Revoke error:', error);
+    res.status(500).json({
+      error: 'Device revocation failed',
+      message: 'An error occurred while revoking your device'
+    });
+  }
+});
+
+/**
+ * GET /api/auth/list-devices
+ * List all registered devices for a user
+ */
+router.get('/auth/list-devices/:walletAddress', (req: Request, res: Response) => {
+  const { walletAddress } = req.params;
+  
+  try {
+    const userState = getOrCreateUserState(walletAddress);
+    
+    res.json({
+      success: true,
+      devices: userState.registeredDevices.map(d => ({
+        deviceId: d.deviceId,
+        deviceName: d.deviceName,
+        registeredAt: d.registeredAt,
+        lastUsedAt: d.lastUsedAt,
+        status: d.status,
+      })),
+      totalDevices: userState.registeredDevices.length,
+    });
+    
+  } catch (error) {
+    console.error('[DEVICE] List error:', error);
+    res.status(500).json({
+      error: 'Device list fetch failed',
+      message: 'An error occurred while fetching your devices'
+    });
+  }
 });
 
 export default router;
