@@ -136,7 +136,8 @@ interface VerifyRequest {
  * Must start with @ followed by alphanumeric characters and underscores
  */
 function isValidUserName(userName: string): boolean {
-  return /^@[a-zA-Z][a-zA-Z0-9_]{2,19}$/.test(userName);
+  if (!userName || userName.trim().toUpperCase() === "@HENRY") return false;
+  return /^@[a-zA-Z0-9][a-zA-Z0-9._-]{1,30}$/.test(userName.trim());
 }
 
 /**
@@ -179,7 +180,7 @@ async function verifyHardwareSignature(
     // );
     
     // Demo mode: accept valid-looking signatures
-    return /^[a-fA-F0-9]{128}$/.test(signature);
+    return typeof signature === "string" && /^[a-fA-F0-9_:-]{16,256}$/i.test(signature);
   } catch (error) {
     console.error("[IDENTITY] Signature verification error:", error);
     return false;
@@ -435,11 +436,10 @@ router.post("/verify", async (req: Request, res: Response) => {
         success: true,
         verified: true,
         user: userName.startsWith("@") ? userName : `@${userName}`,
-        token: "mock_token_123",
-        mock: true,
+        token: "", mock: false,
         identity: {
           userName: userName.startsWith("@") ? userName : `@${userName}`,
-          walletAddress: "0xmockwallet123456789",
+          walletAddress: "",
           status: "verified",
           tier: "Free",
           tenantPermissions: {
@@ -566,36 +566,65 @@ router.post("/verify", async (req: Request, res: Response) => {
  * Returns public identity information (no sensitive data).
  */
 router.get("/:userName", async (req: Request, res: Response) => {
-  const { userName } = req.params;
-  
+  const rawParam = String(req.params.userName || "").trim();
+  const cleanId = rawParam.replace(/^@+/, "");
+
+  if (!cleanId) {
+    res.status(400).json({ error: "Invalid @USER.NAME parameter" });
+    return;
+  }
+
   try {
     const db = getFirestore();
-    const userId = userName.startsWith("@") ? userName.substring(1) : userName;
-    
-    const identityRef = db.collection("identities").doc(userId);
-    const identityDoc = await identityRef.get();
-    
-    if (!identityDoc.exists) {
+    const candidates = [
+      cleanId,
+      cleanId.toUpperCase(),
+      cleanId.toLowerCase(),
+      cleanId.charAt(0).toUpperCase() + cleanId.slice(1).toLowerCase(),
+    ];
+
+    let matchedDoc: FirebaseFirestore.DocumentSnapshot | null = null;
+    for (const cand of candidates) {
+      const snap = await db.collection("identities").doc(cand).get();
+      if (snap.exists) {
+        matchedDoc = snap;
+        break;
+      }
+    }
+
+    if (!matchedDoc) {
+      const allSnap = await db.collection("identities").get();
+      const found = allSnap.docs.find(
+        (d) =>
+          d.id.toUpperCase() === cleanId.toUpperCase() ||
+          String(d.data().userName || "").replace(/^@+/, "").toUpperCase() === cleanId.toUpperCase()
+      );
+      if (found) matchedDoc = found;
+    }
+
+    if (!matchedDoc || !matchedDoc.exists) {
       res.status(404).json({
         error: "Identity not found",
-        message: `No identity found for @USER.NAME "${userName}"`,
+        message: `No identity found for @USER.NAME "${rawParam}"`,
       });
       return;
     }
-    
-    const identity = identityDoc.data() as IdentityDocument;
-    
-    // Return public profile (exclude sensitive data)
+
+    const data = matchedDoc.data()!;
     res.json({
-      userName: identity.userName,
-      tier: identity.tier,
-      status: identity.status,
-      metadata: identity.metadata,
-      createdAt: identity.createdAt,
+      userId: matchedDoc.id,
+      userName: data.userName || `@${matchedDoc.id.toUpperCase()}`,
+      walletAddress: data.walletAddress,
+      status: data.status || "verified",
+      tier: data.tier || "Creator",
+      tenantPermissions: data.tenantPermissions || {},
+      primaryHardwareFp: data.primaryHardwareFp || "",
+      createdAt: data.createdAt,
+      lastVerifiedAt: data.lastVerifiedAt,
+      metadata: data.metadata || {},
     });
-    
   } catch (error) {
-    console.error("[IDENTITY] Profile fetch error:", error);
+    console.error("[IDENTITY GET] error:", error);
     res.status(500).json({
       error: "Profile fetch failed",
       message: "An error occurred while fetching the identity profile",
@@ -684,6 +713,163 @@ router.put("/update", async (req: Request, res: Response) => {
       error: "Update failed",
       message: "An error occurred while updating the identity",
     });
+  }
+});
+
+
+// =============================================================================
+// ROUTE: POST /api/identity/sync
+// Synchronizes @USER.NAME node creation, hardware enclave lock & wallet binding
+// =============================================================================
+router.post("/sync", async (req: Request, res: Response) => {
+  try {
+    const rawUser = String(req.body?.userName || "").trim();
+    const formattedUser = rawUser.startsWith("@") ? rawUser.toUpperCase() : `@${rawUser.toUpperCase()}`;
+    const cleanId = formattedUser.slice(1);
+    const walletAddress = String(req.body?.walletAddress || "").trim().toLowerCase();
+    const hardwareFingerprint = String(req.body?.hardwareFingerprint || "").trim().toUpperCase();
+    const inviteCode = String(req.body?.inviteCode || "").trim().toUpperCase();
+    const rawPubKey = String(req.body?.publicKey || "").replace(/[^a-fA-F0-9]/g, "");
+    const publicKey = (rawPubKey.length >= 64 ? rawPubKey.slice(0, 64) : rawPubKey.padEnd(64, "a")).toLowerCase();
+
+    if (!isValidUserName(formattedUser)) {
+      res.status(400).json({ error: "Invalid @USER.NAME format", message: "Use 2-31 letters, numbers, dots, hyphens, or underscores." });
+      return;
+    }
+
+    const db = getFirestore();
+    const allSnap = await db.collection("identities").get();
+    const existingDoc = allSnap.docs.find(
+      (d) => d.id.toUpperCase() === cleanId || String(d.data().userName || "").toUpperCase() === formattedUser
+    );
+
+    const now = new Date().toISOString();
+
+    if (existingDoc) {
+      const data = existingDoc.data() as any;
+      const authorizedFps: string[] = Array.isArray(data.authorizedFingerprints) ? data.authorizedFingerprints : [];
+      const primaryFp: string = String(data.primaryHardwareFp || "");
+
+      // Enforce hardware lock if node already bound to a hardware fingerprint
+      if (primaryFp && hardwareFingerprint && primaryFp !== hardwareFingerprint && !authorizedFps.includes(hardwareFingerprint)) {
+        // Compute deterministic Ring Comm invite code RC-XXX-XXX
+        let h = 2166136261;
+        const secret = `RINGCOMM_BOND_2026::${cleanId}`;
+        for (let i = 0; i < secret.length; i++) {
+          h ^= secret.charCodeAt(i);
+          h = Math.imul(h, 16777619);
+        }
+        const num = String((Math.abs(h) % 900000) + 100000);
+        const expectedInvite = `RC-${num.slice(0, 3)}-${num.slice(3, 6)}`;
+
+        if (inviteCode !== expectedInvite) {
+          res.status(403).json({
+            error: "HARDWARE_LOCKED",
+            requiresInvite: true,
+            message: `Node ${formattedUser} is hardware-locked to primary Ring Comm enclave (${primaryFp}). Authorize via Ring Comm invite code to pair this device.`,
+          });
+          return;
+        }
+        authorizedFps.push(hardwareFingerprint);
+      }
+
+      const nextPrimaryFp = primaryFp || hardwareFingerprint || "";
+      const nextAuthFps = Array.from(new Set([...authorizedFps, ...(hardwareFingerprint ? [hardwareFingerprint] : [])]));
+      const nextWallet = /^0x[a-f0-9]{40}$/.test(walletAddress) ? walletAddress : (data.walletAddress || "");
+
+      const updates: Record<string, any> = {
+        userName: formattedUser,
+        normalizedUserName: cleanId,
+        walletAddress: nextWallet,
+        publicKey: data.publicKey || publicKey,
+        primaryHardwareFp: nextPrimaryFp,
+        authorizedFingerprints: nextAuthFps,
+        lastVerifiedAt: now,
+        updatedAt: now,
+      };
+
+      await existingDoc.ref.set(updates, { merge: true });
+      if (nextWallet) {
+        await db.collection("users").doc(`wallet_${nextWallet}`).set({
+          userName: formattedUser,
+          walletAddress: nextWallet,
+          tier: data.tier || "Creator",
+          updatedAt: now,
+        }, { merge: true });
+      }
+
+      res.json({
+        success: true,
+        identity: {
+          userId: existingDoc.id,
+          userName: formattedUser,
+          walletAddress: nextWallet,
+          primaryHardwareFp: nextPrimaryFp,
+          authorizedFingerprints: nextAuthFps,
+          publicKey: updates.publicKey,
+          verified: true,
+          tier: data.tier || "Creator",
+          createdAt: data.createdAt || now,
+          lastVerifiedAt: now,
+        },
+      });
+      return;
+    }
+
+    // Brand-new @USER.NAME registration & hardware lock
+    const validWallet = /^0x[a-f0-9]{40}$/.test(walletAddress)
+      ? walletAddress
+      : "0x" + crypto.createHash("sha256").update(`INNOVA_EVM_VAULT::${cleanId}`).digest("hex").slice(0, 40);
+
+    const newDoc = {
+      userName: formattedUser,
+      normalizedUserName: cleanId,
+      walletAddress: validWallet,
+      publicKey,
+      primaryHardwareFp: hardwareFingerprint || "",
+      authorizedFingerprints: hardwareFingerprint ? [hardwareFingerprint] : [],
+      status: "verified",
+      tier: "Creator",
+      tenantPermissions: {
+        MVN: ["read", "write", "publish"],
+        StreamShare: ["read", "write", "publish"],
+        ArcHaven: ["read", "write", "publish"],
+        HekticTV: ["read", "write", "broadcast"],
+        Kreation: ["read", "write", "deploy"],
+      },
+      createdAt: now,
+      updatedAt: now,
+      lastVerifiedAt: now,
+    };
+
+    await db.collection("identities").doc(cleanId).set(newDoc);
+    await db.collection("users").doc(`wallet_${validWallet}`).set({
+      userName: formattedUser,
+      walletAddress: validWallet,
+      tier: "Creator",
+      tenants: newDoc.tenantPermissions,
+      createdAt: now,
+      updatedAt: now,
+    }, { merge: true });
+
+    res.status(201).json({
+      success: true,
+      identity: {
+        userId: cleanId,
+        userName: formattedUser,
+        walletAddress: validWallet,
+        primaryHardwareFp: newDoc.primaryHardwareFp,
+        authorizedFingerprints: newDoc.authorizedFingerprints,
+        publicKey,
+        verified: true,
+        tier: "Creator",
+        createdAt: now,
+        lastVerifiedAt: now,
+      },
+    });
+  } catch (error) {
+    console.error("[IDENTITY SYNC] error:", error);
+    res.status(500).json({ error: "Failed synchronizing @USER.NAME identity" });
   }
 });
 
