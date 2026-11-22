@@ -252,32 +252,50 @@ export interface ModerationResponse {
 // =============================================================================
 
 let db: Firestore;
+let firebaseInitStatus = "uninitialized";
 
-/**
- * Initialize Firebase Admin SDK for server-side database operations
- * Uses service account credentials for privileged access
- */
+function normalizePemPrivateKey(rawInput?: string): string {
+  if (!rawInput) return "";
+  let cleaned = rawInput.trim().replace(/^['"]+|['"]+$/g, "");
+  cleaned = cleaned.replace(/\\\\n/g, "\n").replace(/\\n/g, "\n").replace(/\r/g, "");
+  const match = cleaned.match(/-----BEGIN PRIVATE KEY-----([\s\S]+?)-----END PRIVATE KEY-----/);
+  if (!match) return cleaned;
+  const base64Body = match[1].replace(/\s+/g, "");
+  const lines = base64Body.match(/.{1,64}/g) || [];
+  return `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`;
+}
+
 function initializeFirebaseAdmin() {
   try {
     const cleanEnv = (v?: string) => (v || "").trim().replace(/^['"]+|['"]+$/g, "");
-    const projectId = cleanEnv(process.env.FIREBASE_PROJECT_ID);
-    const clientEmail = cleanEnv(process.env.FIREBASE_CLIENT_EMAIL);
-    const rawKey = cleanEnv(process.env.FIREBASE_PRIVATE_KEY).replace(/\\n/g, "\n");
+    let projectId = cleanEnv(process.env.FIREBASE_PROJECT_ID);
+    let clientEmail = cleanEnv(process.env.FIREBASE_CLIENT_EMAIL);
+    let privateKey = normalizePemPrivateKey(process.env.FIREBASE_PRIVATE_KEY);
+
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
+      const decoded = JSON.parse(Buffer.from(cleanEnv(process.env.FIREBASE_SERVICE_ACCOUNT_B64), "base64").toString("utf8"));
+      projectId = decoded.project_id || projectId;
+      clientEmail = decoded.client_email || clientEmail;
+      privateKey = normalizePemPrivateKey(decoded.private_key || privateKey);
+    }
+
+    if (!projectId || !clientEmail || !privateKey) {
+      firebaseInitStatus = `missing_env(pid=${Boolean(projectId)},email=${Boolean(clientEmail)},pkLen=${privateKey.length})`;
+      console.error("[FIREBASE] Missing env vars:", firebaseInitStatus);
+      return;
+    }
 
     if (getApps().length === 0) {
-      const serviceAccount: ServiceAccount = {
-        projectId,
-        clientEmail,
-        privateKey: rawKey,
-      };
       initializeApp({
-        credential: cert(serviceAccount),
+        credential: cert({ projectId, clientEmail, privateKey }),
         storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`,
       });
     }
     db = getFirestore();
+    firebaseInitStatus = `connected:${projectId}`;
     console.log(`[FIREBASE] Admin SDK initialized successfully for project: ${projectId}`);
-  } catch (error) {
+  } catch (error: any) {
+    firebaseInitStatus = `error:${String(error?.message || error).slice(0, 120)}`;
     console.error("[FIREBASE] Admin SDK initialization failed:", error);
   }
 }
@@ -1403,7 +1421,8 @@ async function startServer() {
     res.json({
       status: "ok",
       engine: "Master Brain Engine",
-      version: "5.0.4",
+      version: "5.0.5",
+      firebase: firebaseInitStatus,
       tenants: VALID_TENANT_IDS,
       timestamp: new Date().toISOString(),
     });
