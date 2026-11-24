@@ -42,6 +42,7 @@ import { getAuth } from "firebase-admin/auth";
 import identityRoutes from "./src/routes/identity.js";
 import walletRoutes from "./src/routes/wallet.js";
 import deviceRoutes from "./src/routes/device.js";
+import mediaAndMessagesRoutes from "./src/routes/mediaAndMessages";
 
 // Load environment variables
 dotenv.config();
