@@ -1107,6 +1107,15 @@ function createApiRoutes(
         return;
       }
 
+            const incomingMediaUrl = String(req.body?.videoUrl || req.body?.streamUrl || req.body?.playUrl || "");
+      if (incomingMediaUrl.startsWith("vault://") || incomingMediaUrl.startsWith("blob:")) {
+        res.status(400).json({
+          error: "Invalid local media reference",
+          message: "Local browser vault:// or blob: URLs cannot be streamed to clients or TVs. Wait for the 100% cloud upload bar to finish.",
+        });
+        return;
+      }
+
       const contentId = req.body.id || `${tenantId.toUpperCase().slice(0, 4)}-${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const isOperator = /^@?TICKER(TWIZTED)?$/i.test(userId);
       const requestedStatus = String(req.body.status || "").toLowerCase();
@@ -1402,7 +1411,7 @@ async function startServer() {
   }));
   
   // Parse JSON bodies
-  app.use(express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: "25mb" }));
   
   // Request logging middleware
   app.use((req: Request, res: Response, next: NextFunction) => {
@@ -1440,6 +1449,7 @@ async function startServer() {
   // These routes handle synchronous wallet functionality bound to @USER.NAME
   app.use("/api/wallet", walletRoutes);
   app.use("/api/device", deviceRoutes);
+  app.use("/api", mediaAndMessagesRoutes);
   
   // Create API routes with full middleware stack (content, comments, etc.)
   if (dbService) {
