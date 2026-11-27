@@ -267,7 +267,8 @@ router.post("/messages", async (req: Request, res: Response) => {
     const from = norm(req.body?.from || String(req.headers["x-user-name"] || "@CLIENT"));
     const to = norm(req.body?.to || "@TICKER");
     const content = String(req.body?.content || req.body?.text || "").trim();
-    const channel = req.body?.channel === "platform_live" ? "platform_live" : "dashboard";
+    const rawCh = String(req.body?.channel || "dashboard");
+    const channel = rawCh === "platform_live" ? "platform_live" : (rawCh === "telegram" ? "telegram" : "dashboard");
     const projectId = String(req.body?.projectId || "");
     const projectTitle = String(req.body?.projectTitle || "StreamShare Delivery");
     const timecode = String(req.body?.timecode || "");
@@ -327,6 +328,22 @@ router.post("/media/finalize", async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("[MEDIA FINALIZE ERROR]", err);
     res.status(500).json({ error: "Failed finalizing cloud object metadata", message: err?.message });
+  }
+});
+
+
+router.patch("/messages/:id/read", async (req: Request, res: Response) => {
+  try {
+    const db = getFirestore();
+    const msgId = String(req.params.id || "").trim();
+    if (!msgId) {
+      res.status(400).json({ error: "Message ID required" });
+      return;
+    }
+    await db.collection("ecosystem_messages").doc(msgId).set({ isRead: true }, { merge: true });
+    res.json({ success: true, id: msgId });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed marking message read", message: err?.message });
   }
 });
 
