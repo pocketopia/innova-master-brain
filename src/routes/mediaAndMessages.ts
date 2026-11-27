@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import express, { Request, Response } from "express";
 import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
@@ -41,23 +42,22 @@ router.post("/media/init", async (req: Request, res: Response) => {
     const bucket = await resolveActiveStorageBucket();
     if (bucket) {
       const objectPath = `uploads/${tenant}/${assetId}_${fileName}`;
+      const downloadToken = crypto.randomUUID();
       const file = bucket.file(objectPath);
       const [uploadUrl] = await file.getSignedUrl({
         version: "v4",
         action: "write",
-        expires: Date.now() + 45 * 60 * 1000,
+        expires: Date.now() + 4 * 60 * 60 * 1000,
         contentType,
       });
-      const [signedReadUrl] = await file.getSignedUrl({
-        version: "v4",
-        action: "read",
-        expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-      });
+      const permanentUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(objectPath)}?alt=media&token=${downloadToken}`;
       res.json({
         mode: "gcs_signed",
         assetId,
+        objectPath,
+        downloadToken,
         uploadUrl,
-        publicUrl: signedReadUrl,
+        publicUrl: permanentUrl,
       });
       return;
     }
@@ -299,6 +299,35 @@ router.post("/messages", async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("[MESSAGES POST ERROR]", err);
     res.status(500).json({ error: "Failed saving message" });
+  }
+});
+
+
+router.post("/media/finalize", async (req: Request, res: Response) => {
+  try {
+    const objectPath = String(req.body?.objectPath || "").trim();
+    const downloadToken = String(req.body?.downloadToken || "").trim();
+    if (!objectPath || !downloadToken) {
+      res.status(400).json({ error: "objectPath and downloadToken required" });
+      return;
+    }
+    const bucket = await resolveActiveStorageBucket();
+    if (!bucket) {
+      res.status(503).json({ error: "Storage bucket unavailable" });
+      return;
+    }
+    const file = bucket.file(objectPath);
+    await file.setMetadata({
+      cacheControl: "public, max-age=31536000",
+      metadata: {
+        firebaseStorageDownloadTokens: downloadToken,
+      },
+    });
+    const permanentUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(objectPath)}?alt=media&token=${downloadToken}`;
+    res.json({ success: true, publicUrl: permanentUrl });
+  } catch (err: any) {
+    console.error("[MEDIA FINALIZE ERROR]", err);
+    res.status(500).json({ error: "Failed finalizing cloud object metadata", message: err?.message });
   }
 });
 

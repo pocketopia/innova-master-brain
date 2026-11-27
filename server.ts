@@ -1370,6 +1370,7 @@ async function startServer() {
       message: "You have exceeded the rate limit. Please try again later.",
     },
     standardHeaders: true,
+  skip: (req) => req.path.startsWith("/api/media") || req.path.startsWith("/media"),
     legacyHeaders: false,
   });
   
