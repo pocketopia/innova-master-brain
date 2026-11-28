@@ -1,3 +1,4 @@
+import AdmZip from "adm-zip";
 import crypto from "crypto";
 import express, { Request, Response } from "express";
 import { getFirestore } from "firebase-admin/firestore";
@@ -344,6 +345,113 @@ router.patch("/messages/:id/read", async (req: Request, res: Response) => {
     res.json({ success: true, id: msgId });
   } catch (err: any) {
     res.status(500).json({ error: "Failed marking message read", message: err?.message });
+  }
+});
+
+
+const GAME_MIME_MAP: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".htm": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".json": "application/json; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".wav": "audio/wav",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".pck": "application/octet-stream",
+  ".data": "application/octet-stream",
+  ".mem": "application/octet-stream",
+  ".unityweb": "application/octet-stream",
+};
+
+/**
+ * POST /api/media/extract-kreation-zip
+ * Unpacks an uploaded HTML5 / WebGL2 / Godot / Unity Web .zip archive inside Cloud Storage
+ * into games/<gameId>/... with proper application/wasm & text/html headers and returns playableBuildUrl!
+ */
+router.post("/media/extract-kreation-zip", async (req: Request, res: Response) => {
+  try {
+    const zipUrl = String(req.body?.zipUrl || "").trim();
+    const gameId = String(req.body?.gameId || "KR-" + Date.now().toString().slice(-6)).replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!zipUrl) {
+      res.status(400).json({ error: "zipUrl is required" });
+      return;
+    }
+    const bucket = await resolveActiveStorageBucket();
+    if (!bucket) {
+      res.status(503).json({ error: "Cloud Storage bucket unavailable" });
+      return;
+    }
+
+    const gcsPrefix = `https://storage.googleapis.com/${bucket.name}/`;
+    let zipBuffer: Buffer;
+    if (zipUrl.startsWith(gcsPrefix)) {
+      const objectPath = decodeURIComponent(zipUrl.slice(gcsPrefix.length).split("?")[0]);
+      const [downloaded] = await bucket.file(objectPath).download();
+      zipBuffer = downloaded;
+    } else {
+      const resp = await fetch(zipUrl);
+      if (!resp.ok) throw new Error(`Failed fetching zip archive (${resp.status})`);
+      zipBuffer = Buffer.from(await resp.arrayBuffer());
+    }
+
+    const zip = new AdmZip(zipBuffer);
+    const entries = zip.getEntries().filter((e) => !e.isDirectory && !e.entryName.includes("__MACOSX") && !e.entryName.startsWith("."));
+    if (entries.length === 0) {
+      res.status(400).json({ error: "ZIP archive is empty" });
+      return;
+    }
+
+    // Strip single top-level wrapper folder if present so index.html sits cleanly at root
+    const firstSegs = new Set(entries.map((e) => e.entryName.split("/")[0]));
+    const hasCommonRoot = firstSegs.size === 1 && entries.every((e) => e.entryName.includes("/"));
+    const rootPrefix = hasCommonRoot ? [...firstSegs][0] + "/" : "";
+
+    let indexRelPath = "";
+    for (const entry of entries) {
+      const cleanRel = (rootPrefix && entry.entryName.startsWith(rootPrefix)
+        ? entry.entryName.slice(rootPrefix.length)
+        : entry.entryName
+      ).replace(/^\/+/, "");
+      if (!cleanRel || cleanRel.includes("..")) continue;
+
+      const ext = ("." + (cleanRel.split(".").pop() || "")).toLowerCase();
+      const contentType = GAME_MIME_MAP[ext] || "application/octet-stream";
+      const destPath = `games/${gameId}/${cleanRel}`;
+      const destFile = bucket.file(destPath);
+
+      await destFile.save(entry.getData(), {
+        resumable: false,
+        contentType,
+        metadata: { cacheControl: "public, max-age=31536000" },
+      });
+      await destFile.makePublic().catch(() => {});
+
+      if (cleanRel.toLowerCase() === "index.html" || (!indexRelPath && cleanRel.toLowerCase().endsWith(".html"))) {
+        indexRelPath = cleanRel;
+      }
+    }
+
+    if (!indexRelPath) {
+      res.status(400).json({ error: "No index.html found inside WebGL/HTML5 ZIP package" });
+      return;
+    }
+
+    const encodedGamePath = `games/${gameId}/${indexRelPath}`.split("/").map(encodeURIComponent).join("/");
+    const playableBuildUrl = `https://storage.googleapis.com/${bucket.name}/${encodedGamePath}`;
+    res.json({ success: true, gameId, playableBuildUrl, extractedFiles: entries.length });
+  } catch (err: any) {
+    console.error("[KREATION ZIP EXTRACT ERROR]", err);
+    res.status(500).json({ error: "Failed extracting Kreation WebGL ZIP", message: err?.message });
   }
 });
 
